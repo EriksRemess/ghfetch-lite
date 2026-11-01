@@ -1,0 +1,14 @@
+[package]
+name = "ghfetch-lite"
+version = "0.1.0"
+edition = "2024"
+description = "A small GitHub profile fetcher for the terminal, with no Cargo dependencies"
+license = "MIT"
+rust-version = "1.85"
+repository = "https://github.com/EriksRemess/ghfetch-lite"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
