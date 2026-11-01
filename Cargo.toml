@@ -1,6 +1,6 @@
 [package]
 name = "ghfetch-lite"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A small GitHub profile fetcher for the terminal, with no Cargo dependencies"
 license = "MIT"
