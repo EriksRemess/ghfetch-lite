@@ -3,7 +3,7 @@ mod json;
 mod render;
 
 use api::{Client, Profile};
-use render::{ImageMode, Layout, Stats};
+use render::{Layout, Stats};
 use std::{
     env,
     io::{self, IsTerminal, Write},
@@ -16,8 +16,7 @@ const HELP: &str = "ghfetch-lite — GitHub profiles in your terminal
 Usage: ghfetch-lite [OPTIONS] USERNAME
 
 Options:
-  --image MODE    auto, kitty, iterm, or none (default: kitty)
-  --no-image      Disable the avatar
+  --no-image      Disable the Kitty avatar
   --color WHEN    auto, always, or never (default: auto)
   --no-color      Disable colors (also respects NO_COLOR)
   --width COLS    Override terminal width (default: detected, then COLUMNS, then 80)
@@ -31,7 +30,7 @@ Images require a supported terminal; redirected output is always text-only.
 
 struct Options {
     username: String,
-    image: ImageMode,
+    image: bool,
     color: String,
     width: Option<usize>,
 }
@@ -45,24 +44,15 @@ enum Action {
 fn options(args: impl IntoIterator<Item = String>) -> Result<Action, String> {
     let mut args = args.into_iter();
     let mut username = None;
-    let mut image = ImageMode::Kitty;
+    let mut image = true;
     let mut color = "auto".to_string();
     let mut width = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(Action::Help),
             "-V" | "--version" => return Ok(Action::Version),
-            "--no-image" => image = ImageMode::None,
+            "--no-image" => image = false,
             "--no-color" => color = "never".into(),
-            "--image" => {
-                image = match args.next().as_deref() {
-                    Some("auto") => ImageMode::Auto,
-                    Some("kitty") => ImageMode::Kitty,
-                    Some("iterm") => ImageMode::Iterm,
-                    Some("none") => ImageMode::None,
-                    _ => return Err("--image expects auto, kitty, iterm, or none".into()),
-                }
-            }
             "--color" => {
                 color = args
                     .next()
@@ -135,32 +125,6 @@ fn terminal_size() -> Option<(usize, usize)> {
     None
 }
 
-fn image_mode(requested: ImageMode, terminal: bool, width: usize, rows: usize) -> ImageMode {
-    if !terminal || width < 68 || rows < 18 {
-        return ImageMode::None;
-    }
-    if requested != ImageMode::Auto {
-        return requested;
-    }
-    if env::var_os("TMUX").is_some()
-        || env::var("TERM").is_ok_and(|t| t.starts_with("screen") || t.starts_with("tmux"))
-    {
-        return ImageMode::None;
-    }
-    let term = env::var("TERM").unwrap_or_default();
-    let program = env::var("TERM_PROGRAM").unwrap_or_default();
-    if matches!(program.as_str(), "ghostty" | "kitty")
-        || term == "xterm-kitty"
-        || term == "xterm-ghostty"
-    {
-        ImageMode::Kitty
-    } else if matches!(program.as_str(), "iTerm.app" | "WezTerm") {
-        ImageMode::Iterm
-    } else {
-        ImageMode::None
-    }
-}
-
 fn optional<T>(label: &str, result: Result<T, String>) -> Option<T> {
     match result {
         Ok(value) => Some(value),
@@ -202,12 +166,8 @@ fn run(options: Options) -> Result<(), String> {
         size.map(|s| s.0),
         env::var("COLUMNS").ok().and_then(|s| s.parse().ok()),
     );
-    let mode = image_mode(
-        options.image,
-        terminal,
-        width,
-        size.map(|s| s.1).unwrap_or(24),
-    );
+    let show_image =
+        options.image && terminal && width >= 68 && size.map(|s| s.1).unwrap_or(24) >= 18;
     let color = match options.color.as_str() {
         "always" => true,
         "never" => false,
@@ -241,7 +201,7 @@ fn run(options: Options) -> Result<(), String> {
             }
         });
         let avatar = scope.spawn(|| {
-            if mode != ImageMode::None {
+            if show_image {
                 client.avatar(profile.id).map(Some)
             } else {
                 Ok(None)
@@ -264,17 +224,9 @@ fn run(options: Options) -> Result<(), String> {
     };
     let avatar = optional("avatar", avatar.map_err(|_| "worker failed")?).flatten();
     let avatar = avatar.filter(|bytes| {
-        let supported = if mode == ImageMode::Kitty {
-            bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-        } else {
-            bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-                || bytes.starts_with(&[0xff, 0xd8, 0xff])
-                || bytes.starts_with(b"GIF8")
-        };
+        let supported = bytes.starts_with(b"\x89PNG\r\n\x1a\n");
         if !supported {
-            eprintln!(
-                "ghfetch-lite: avatar format unsupported by selected protocol; using text layout"
-            );
+            eprintln!("ghfetch-lite: avatar is not PNG; using text layout");
         }
         supported
     });
@@ -285,7 +237,6 @@ fn run(options: Options) -> Result<(), String> {
             color,
             width,
             rows: size.map(|s| s.1).unwrap_or(24),
-            image: mode,
         },
         avatar.as_deref(),
     );
@@ -341,6 +292,7 @@ mod tests {
             vec!["--width", "0", "octocat"],
             vec!["--color", "bad", "octocat"],
             vec!["--image"],
+            vec!["octocat", "--image", "kitty"],
             vec!["a", "b"],
             vec!["../user"],
         ] {
@@ -354,19 +306,15 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_kitty_and_retains_explicit_overrides() {
+    fn images_are_enabled_by_default_and_can_be_disabled() {
         for (args, expected) in [
-            (vec!["octocat"], ImageMode::Kitty),
-            (vec!["octocat", "--image", "auto"], ImageMode::Auto),
-            (vec!["octocat", "--no-image"], ImageMode::None),
-            (vec!["octocat", "--image", "iterm"], ImageMode::Iterm),
+            (vec!["octocat"], true),
+            (vec!["octocat", "--no-image"], false),
         ] {
             let Action::Run(options) = options(args.into_iter().map(String::from)).unwrap() else {
                 panic!("expected run")
             };
             assert_eq!(options.image, expected);
         }
-        assert_eq!(image_mode(ImageMode::Kitty, true, 80, 24), ImageMode::Kitty);
-        assert_eq!(image_mode(ImageMode::Kitty, false, 80, 24), ImageMode::None);
     }
 }

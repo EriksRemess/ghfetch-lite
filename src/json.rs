@@ -1,5 +1,4 @@
 //! Small, bounded JSON reader for GitHub's responses.
-use std::collections::BTreeMap;
 
 #[derive(Debug, PartialEq)]
 pub enum Value {
@@ -8,13 +7,17 @@ pub enum Value {
     Number(String),
     String(String),
     Array(Vec<Value>),
-    Object(BTreeMap<String, Value>),
+    Object(Vec<(String, Value)>),
 }
 
 impl Value {
     pub fn get(&self, key: &str) -> Option<&Self> {
         match self {
-            Self::Object(fields) => fields.get(key),
+            Self::Object(fields) => fields
+                .iter()
+                .rev()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value),
             _ => None,
         }
     }
@@ -97,7 +100,7 @@ impl Reader<'_> {
             Some(b'{') => {
                 self.pos += 1;
                 self.space();
-                let mut fields = BTreeMap::new();
+                let mut fields = Vec::new();
                 if self.take(b'}') {
                     return Ok(Value::Object(fields));
                 }
@@ -106,7 +109,7 @@ impl Reader<'_> {
                     let key = self.string()?;
                     self.space();
                     self.expect(b':')?;
-                    fields.insert(key, self.value(depth + 1)?);
+                    fields.push((key, self.value(depth + 1)?));
                     self.space();
                     if self.take(b'}') {
                         break;
@@ -250,6 +253,19 @@ impl Reader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn object_lookup_preserves_last_duplicate_key_and_nested_fields() {
+        let data = parse(r#"{"login":"old","nested":{"login":"inside"},"login":"new"}"#).unwrap();
+        assert_eq!(data.get("login").and_then(Value::text), Some("new"));
+        assert_eq!(
+            data.get("nested")
+                .and_then(|v| v.get("login"))
+                .and_then(Value::text),
+            Some("inside")
+        );
+        assert!(data.get("missing").is_none());
+    }
 
     #[test]
     fn reads_github_strings_and_large_ids() {

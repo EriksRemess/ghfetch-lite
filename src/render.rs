@@ -1,13 +1,4 @@
 use crate::api::{Profile, RepoStats, SocialLink};
-use std::collections::BTreeSet;
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ImageMode {
-    Auto,
-    Kitty,
-    Iterm,
-    None,
-}
 
 pub struct Stats {
     pub repos: Option<RepoStats>,
@@ -20,7 +11,6 @@ pub struct Layout {
     pub color: bool,
     pub width: usize,
     pub rows: usize,
-    pub image: ImageMode,
 }
 
 // User-controlled profile text must never introduce terminal control sequences.
@@ -132,8 +122,7 @@ fn profile_rows(profile: &Profile, stats: &Stats) -> Vec<(String, String)> {
             rows.push((label.into(), value.clone()));
         }
     }
-    let mut seen = BTreeSet::new();
-    seen.insert(profile.website.trim_end_matches('/').to_string());
+    let mut seen = vec![profile.website.trim_end_matches('/').to_string()];
     let has_twitter = stats.socials.iter().any(|link| {
         matches!(link.provider.as_str(), "twitter" | "x")
             || link.url.starts_with("https://twitter.com/")
@@ -143,9 +132,11 @@ fn profile_rows(profile: &Profile, stats: &Stats) -> Vec<(String, String)> {
         rows.push(("Twitter".into(), format!("@{}", profile.twitter)));
     }
     for link in &stats.socials {
-        if !seen.insert(link.url.trim_end_matches('/').to_string()) {
+        let url = link.url.trim_end_matches('/');
+        if seen.iter().any(|existing| existing == url) {
             continue;
         }
+        seen.push(url.to_string());
         let provider = clean(&link.provider);
         let label = match provider.as_str() {
             "twitter" | "x" => "Twitter".into(),
@@ -153,13 +144,11 @@ fn profile_rows(profile: &Profile, stats: &Stats) -> Vec<(String, String)> {
             "linkedin" => "LinkedIn".into(),
             "generic" | "" => "Link".into(),
             _ => {
-                let mut chars = provider.chars();
-                chars
-                    .next()
-                    .unwrap()
-                    .to_uppercase()
-                    .chain(chars)
-                    .collect::<String>()
+                let mut label = provider;
+                if let Some(first) = label.get_mut(..1) {
+                    first.make_ascii_uppercase();
+                }
+                label
             }
         };
         rows.push((label, link.url.clone()));
@@ -167,26 +156,11 @@ fn profile_rows(profile: &Profile, stats: &Stats) -> Vec<(String, String)> {
     rows
 }
 
-fn iterm_header(byte_count: usize) -> String {
-    format!("\x1b]1337;File=inline=1;size={byte_count};width=26;height=13;preserveAspectRatio=1:")
-}
-
-fn iterm_image_fits(byte_count: usize) -> bool {
-    const SEQUENCE_LIMIT: usize = 1_048_576;
-    // Check before encoding; include the OSC header and terminating BEL in the limit.
-    byte_count <= SEQUENCE_LIMIT
-        && iterm_header(byte_count).len() + byte_count.div_ceil(3) * 4 < SEQUENCE_LIMIT
-}
-
 pub fn render(profile: &Profile, stats: &Stats, layout: &Layout, avatar: Option<&[u8]>) -> String {
-    let avatar =
-        avatar.filter(|bytes| layout.image != ImageMode::Iterm || iterm_image_fits(bytes.len()));
     let rows = profile_rows(profile, stats);
     let text_height = 2 + rows.len() + if profile.bio.is_empty() { 0 } else { 2 };
-    let has_image = avatar.is_some()
-        && matches!(layout.image, ImageMode::Kitty | ImageMode::Iterm)
-        && layout.width >= 68
-        && layout.rows >= text_height.max(13) + 2;
+    let has_image =
+        avatar.is_some() && layout.width >= 68 && layout.rows >= text_height.max(13) + 2;
     let offset = if has_image {
         31
     } else {
@@ -257,29 +231,19 @@ pub fn render(profile: &Profile, stats: &Stats, layout: &Layout, avatar: Option<
     if let Some(bytes) = avatar.filter(|_| has_image) {
         // Reserve rows first, then draw, so scrolling cannot overwrite the image.
         output.push_str(&format!("\x1b[{height}A\r\x1b[2C\x1b7"));
-        match layout.image {
-            ImageMode::Kitty => {
-                let encoded = base64(bytes);
-                let chunks: Vec<_> = encoded.as_bytes().chunks(4096).collect();
-                for (index, chunk) in chunks.iter().enumerate() {
-                    let more = u8::from(index + 1 < chunks.len());
-                    if index == 0 {
-                        output.push_str("\x1b_Ga=T,f=100,t=d,c=26,r=13,C=1,q=2,");
-                    } else {
-                        output.push_str("\x1b_Gq=2,");
-                    }
-                    output.push_str(&format!(
-                        "m={more};{}\x1b\\",
-                        std::str::from_utf8(chunk).unwrap()
-                    ));
-                }
+        let encoded = base64(bytes);
+        let chunks: Vec<_> = encoded.as_bytes().chunks(4096).collect();
+        for (index, chunk) in chunks.iter().enumerate() {
+            let more = u8::from(index + 1 < chunks.len());
+            if index == 0 {
+                output.push_str("\x1b_Ga=T,f=100,t=d,c=26,r=13,C=1,q=2,");
+            } else {
+                output.push_str("\x1b_Gq=2,");
             }
-            ImageMode::Iterm => {
-                output.push_str(&iterm_header(bytes.len()));
-                output.push_str(&base64(bytes));
-                output.push('\x07');
-            }
-            _ => {}
+            output.push_str(&format!(
+                "m={more};{}\x1b\\",
+                std::str::from_utf8(chunk).unwrap()
+            ));
         }
         output.push_str(&format!("\x1b8\r\x1b[{height}B"));
     }
@@ -368,7 +332,6 @@ mod tests {
                 color: false,
                 width: 80,
                 rows: 24,
-                image: ImageMode::Kitty,
             },
             Some(&avatar),
         );
@@ -389,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn iterm_is_inline_and_narrow_layout_skips_image() {
+    fn narrow_layout_skips_image() {
         let stats = Stats {
             repos: None,
             prs: None,
@@ -397,48 +360,14 @@ mod tests {
             socials: Vec::new(),
         };
         let avatar = b"fixture";
-        let mut layout = Layout {
-            color: false,
-            width: 80,
-            rows: 24,
-            image: ImageMode::Iterm,
-        };
-        let text = render(&profile(), &stats, &layout, Some(avatar));
-        assert!(text.contains("\x1b]1337;File=inline=1;size=7;width=26;height=13;preserveAspectRatio=1:Zml4dHVyZQ==\x07"));
-        layout.width = 40;
-        let text = render(&profile(), &stats, &layout, Some(avatar));
-        assert!(!text.contains('\x1b'));
-        assert!(text.starts_with("\n  octocat\n"));
-    }
-
-    #[test]
-    fn iterm_respects_sequence_limit_and_oversized_avatars_use_text_layout() {
-        let stats = Stats {
-            repos: None,
-            prs: None,
-            issues: None,
-            socials: Vec::new(),
-        };
         let layout = Layout {
             color: false,
-            width: 80,
+            width: 40,
             rows: 24,
-            image: ImageMode::Iterm,
         };
-        let near_limit = vec![42; 786_300];
-        let text = render(&profile(), &stats, &layout, Some(&near_limit));
-        let start = text
-            .find("\x1b]1337;")
-            .expect("near-limit image should display");
-        let end = start + text[start..].find('\x07').unwrap() + 1;
-        assert!(end - start <= 1_048_576);
-
-        // Base64 alone fills 1 MiB; the header pushes the complete sequence over the limit.
-        let oversized = vec![42; 786_432];
-        let text = render(&profile(), &stats, &layout, Some(&oversized));
+        let text = render(&profile(), &stats, &layout, Some(avatar));
         assert!(!text.contains('\x1b'));
         assert!(text.starts_with("\n  octocat\n"));
-        assert!(text.contains("Twitter     @octocat"));
     }
 
     #[test]
@@ -467,7 +396,6 @@ mod tests {
                 color: false,
                 width: 80,
                 rows: 24,
-                image: ImageMode::None,
             },
             None,
         );
@@ -495,7 +423,6 @@ mod tests {
                 color: false,
                 width: 80,
                 rows: 16,
-                image: ImageMode::Kitty,
             },
             Some(b"fixture"),
         );

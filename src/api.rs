@@ -1,6 +1,5 @@
 use crate::json::{self, Value};
 use std::{
-    collections::BTreeMap,
     env,
     io::Write,
     process::{Command, Stdio},
@@ -270,7 +269,7 @@ fn repository_stats(
     mut get: impl FnMut(usize) -> Result<Value, String>,
 ) -> Result<RepoStats, String> {
     let mut stars = 0u64;
-    let mut languages = BTreeMap::<String, u64>::new();
+    let mut languages = Vec::<(String, u64)>::new();
     for page in 1..=1000 {
         let response = get(page)?;
         let repos = response
@@ -286,7 +285,11 @@ fn repository_stats(
                 .checked_add(required_count(repo, "stargazers_count")?)
                 .ok_or("star count overflow")?;
             if let Some(language) = repo.get("language").and_then(Value::text) {
-                *languages.entry(language.to_string()).or_default() += 1;
+                if let Some((_, count)) = languages.iter_mut().find(|(name, _)| name == language) {
+                    *count += 1;
+                } else {
+                    languages.push((language.to_string(), 1));
+                }
             }
         }
         if repos.len() < 100 {

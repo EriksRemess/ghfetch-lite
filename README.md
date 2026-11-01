@@ -11,5 +11,5 @@ ghfetch-lite EriksRemess
 ghfetch-lite --help
 ```
 
-Use `--help` for options, `--no-image` for text only, or `--image auto` for terminal detection.
+Use `--help` for options or `--no-image` for text only.
 Set `GH_TOKEN` or `GITHUB_TOKEN` for higher API rate limits.

@@ -96,7 +96,7 @@ impl Drop for Fixture {
 #[test]
 fn full_cli_fetches_and_renders_without_escapes_when_piped() {
     let fixture = Fixture::new();
-    let output = fixture.run(&["octocat", "--image", "kitty"], false);
+    let output = fixture.run(&["octocat"], false);
     assert!(
         output.status.success(),
         "{}",

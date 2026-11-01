@@ -8,6 +8,7 @@ rust-version = "1.85"
 repository = "https://github.com/EriksRemess/ghfetch-lite"
 
 [profile.release]
+opt-level = "z"
 strip = true
 lto = true
 codegen-units = 1
